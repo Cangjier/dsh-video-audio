@@ -1,0 +1,36 @@
+# dsh-video-audio bundle patch.
+#
+# 它只贡献一行，且不依赖任何特定 composition：
+#
+#   dsh-video-audio  Host 插件：注册 `audio_*` 工具
+#             （audio_build / audio_measure / audio_setup / audio_guide）。
+#             需要 `tools` 服务，在挂载了 @deepseek-ai/dsh-tools 的任何 profile 里都安全。
+#
+# 配置分两类：
+#   - 路径类（projectRoot / ffmpegPath / ffprobePath）留空即自动推导，换机器不用改；
+#     发现顺序是 config → DSH_AUDIO_FFMPEG → 本插件 vendor → 同级 video-factory 的
+#     vendor/ffmpeg → PATH，所以"渲染视频的那台机器"不用再下一份 ffmpeg。
+#   - 资源类（audio.vendorDir）留空即"本插件 vendor/audio 优先，其次同级 video-factory"。
+#     同级那份是本插件搬出来之前的旧位置，读到会明确告诉你是从哪读的。
+#
+# 没有任何必填项：不装 YAMNet 也能用全部测量与生成动作，只有 audio_events 需要它。
+
+- insert:
+    - id: dsh-video-audio
+      name: 'dsh-video-audio'
+      config:
+        # 工作目录基准。null = 调用方给的 cwd → 进程工作目录。
+        projectRoot: null
+
+        # ffmpeg / ffprobe 显式路径。null = 本插件 vendor/ffmpeg/bin → 同级 video-factory
+        # 的 vendor/ffmpeg/bin → PATH 依次发现。
+        ffmpegPath: null
+        ffprobePath: null
+
+        # 中间产物路径长度上限（Windows 260 上限）。
+        pathBudget: 200
+
+        audio:
+          # YAMNet 模型与 ONNX 运行时所在的 vendor 目录。
+          # null = 本插件 vendor/audio → 同级 video-factory/vendor/audio → DSH_AUDIO_VENDOR。
+          vendorDir: null

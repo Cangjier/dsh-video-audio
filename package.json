@@ -1,0 +1,37 @@
+{
+  "name": "dsh-video-audio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DSH 插件：造声音、修声音、量声音。写入完全指定的测试信号与采样级时间线，跑显式修复链并回测，读取响度/电平/削波/噪声底/帧链完整性——只出数字与文件，不出判断。",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.mjs",
+    "./core": "./src/core/index.mjs",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.mjs",
+    "src",
+    "cordis.patch.yml",
+    "docs",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "win32"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "check": "node --check index.mjs",
+    "surface": "node src/bin/surface-report.mjs"
+  }
+}

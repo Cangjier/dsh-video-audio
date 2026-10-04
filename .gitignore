@@ -1,0 +1,26 @@
+# Node
+node_modules/
+*.log
+
+# Python bytecode from the one-shot migration scripts, which are written in Python where a codec
+# question is easier to answer there than in JavaScript.
+__pycache__/
+*.pyc
+
+# Borrowed ffmpeg. The discovery order already reaches a sibling video-factory checkout, so this
+# directory only appears on a machine that deliberately vendors its own build here.
+vendor/ffmpeg/
+vendor/ffmpeg-*.zip
+vendor/*.zip
+vendor/*.7z
+
+# Vendored YAMNet model and the shared ONNX runtime: 28.4 MB, reproducible from the pinned URLs
+# and hashes recorded in src/core/audio-install.mjs, which is tracked. SOURCE.json is ignored
+# with the rest because it describes what one machine installed.
+#
+# vendor/matte/ is NOT this plugin's: the matting model belongs to video-factory, which reads
+# this directory only when it has no copy of its own.
+vendor/audio/
+
+# Scratch space: decoded WAV for classification, downloaded archives, test material.
+tmp/

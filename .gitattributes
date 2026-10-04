@@ -1,0 +1,19 @@
+# Line endings are normalised to LF in the repository, with two deliberate exceptions.
+* text=auto eol=lf
+
+# A Windows PowerShell 5.1 script works with LF, but CRLF is what a Windows-only script should be
+# checked out as. There are no such scripts today except the one-shot ANSI table generator the
+# incident document refers to; the rule is here so a future one is not a surprise.
+*.ps1 text eol=crlf
+
+# Any media that ends up committed stays byte-for-byte.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.mp4 binary
+*.mp3 binary
+*.wav binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.onnx binary
