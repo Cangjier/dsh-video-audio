@@ -227,7 +227,7 @@ function boundaries() {
       need: '抠像所需的 ONNX 推理运行时',
       owner: 'video_setup {action:"install_matte"}，复用 audio_setup {action:"install"} 装好的运行时',
       fact:
-        'video-factory 里的抠图模型没有自己的 WASM 运行时，它读本插件的 vendor/audio/runtime；' +
+        'video-factory 里的抠图模型没有自己的 WASM 运行时，它读共享目录 ~/.dsh-plugins/lib/onnxruntime-web（旧机器上是本插件的 vendor/audio/runtime）；' +
         '所以 audio_setup {action:"remove"} 会把那台机器上的抠图一起弄坏。',
     },
   ]

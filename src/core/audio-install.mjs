@@ -35,17 +35,50 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
-import { PLUGIN_ROOT, audioDirCandidates } from './env.mjs'
+import { PLUGIN_ROOT, audioDirCandidates, resolveAudioAssets } from './env.mjs'
+import { SHARED_LIB_DIR, SHARED_RUNTIME_DIR, SHARED_YAMNET_DIR } from './home.mjs'
 import { download } from './install.mjs'
 import {
   AUDIO_MANIFEST,
+  AUDIO_RUNTIME_DIR,
   AUDIO_VENDOR_DIR,
   audioEventState,
   readAudioManifest,
 } from './audio-events.mjs'
 
-/** Scratch directory for downloads. */
-export const AUDIO_SCRATCH_DIR = join(AUDIO_VENDOR_DIR, '.download')
+/** Where the model is installed: the shared plugin home. */
+export const AUDIO_MODEL_DIR = SHARED_YAMNET_DIR
+
+/** Where the ONNX WASM runtime is installed: shared with matting, in the same home. */
+export const AUDIO_RUNTIME_INSTALL_DIR = SHARED_RUNTIME_DIR
+
+/** Scratch directory for downloads. Inside the model directory, so a partial file cannot be read as the model. */
+export const AUDIO_SCRATCH_DIR = join(AUDIO_MODEL_DIR, '.download')
+
+/**
+ * The directory a legacy `vendor/audio` tree is read from, when one exists.
+ *
+ * A machine that installed the 28 MB before the shared home existed has a complete tree — model
+ * and runtime together — in one of these, and an install copies from it instead of downloading.
+ *
+ * @returns {string|null} the newest complete-enough legacy directory, or null.
+ */
+export function legacyAudioRoots() {
+  return [
+    join(PLUGIN_ROOT, 'vendor', 'audio'),
+    ...audioDirCandidates().filter((directory) => directory !== AUDIO_MODEL_DIR),
+  ]
+}
+
+/** How many of the four files detection loads exist under one directory. */
+function completenessOf(root) {
+  return [
+    join(root, 'yamnet', 'yamnet.onnx'),
+    join(root, 'yamnet', 'yamnet_class_map.csv'),
+    join(root, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort.wasm.mjs'),
+    join(root, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm'),
+  ].filter((path) => existsSync(path)).length
+}
 
 /**
  * The model files, pinned by SHA-256.
@@ -71,14 +104,14 @@ export const AUDIO_MODEL = {
   files: [
     {
       name: 'model',
-      target: join(AUDIO_VENDOR_DIR, 'yamnet', 'yamnet.onnx'),
+      target: join(AUDIO_MODEL_DIR, 'yamnet.onnx'),
       url: 'https://huggingface.co/niobures/YAMNet/resolve/main/yamnetonnx/yamnet.onnx',
       bytes: 16_124_200,
       sha256: '04e27fca08e7a3aea2630d1a63a51e6b437c803e0ff6e26399f80870ac251dda',
     },
     {
       name: 'classMap',
-      target: join(AUDIO_VENDOR_DIR, 'yamnet', 'yamnet_class_map.csv'),
+      target: join(AUDIO_MODEL_DIR, 'yamnet_class_map.csv'),
       url: 'https://huggingface.co/niobures/YAMNet/resolve/main/yamnetonnx/yamnet_class_map.csv',
       bytes: 14_096,
       sha256: 'cdf24d193e196d9e95912a2667051ae203e92a2ba09449218ccb40ef787c6df2',
@@ -152,11 +185,15 @@ export const AUDIO_RUNTIME_PACKAGES = [
 
 /**
  * The directory a runtime package's kept files are written into.
+ *
+ * The packages keep npm's `node_modules` shape inside the shared runtime directory, so the
+ * directory can be handed to a resolver as-is.
+ *
  * @param {string} name - the package name.
  * @returns {string} the absolute destination.
  */
 export function runtimePackageDir(name) {
-  return join(AUDIO_VENDOR_DIR, 'runtime', 'node_modules', name)
+  return join(AUDIO_RUNTIME_INSTALL_DIR, 'node_modules', name)
 }
 
 /**
@@ -177,26 +214,38 @@ export function sriOf(path) {
   return `sha512-${createHash('sha512').update(readFileSync(path)).digest('base64')}`
 }
 
+/** The install targets, each with the base its recorded file paths are relative to. */
+export const AUDIO_INSTALL_TARGETS = [
+  { key: 'yamnet', base: AUDIO_MODEL_DIR },
+  { key: 'runtime', base: AUDIO_RUNTIME_INSTALL_DIR },
+]
+
 /**
- * Every file under `vendor/audio` except the manifest and scratch, as `/`-separated relatives.
- * @returns {string[]} sorted relative paths.
+ * Every installed file, as `{ path, base }` where `path` is `key/...` relative to the shared home.
+ *
+ * The model and the runtime are two directories now, so a single relative base no longer
+ * describes the tree; the manifest keys files by `yamnet/...` and `runtime/...` either way, which
+ * keeps an existing manifest readable.
+ *
+ * @returns {{path: string, base: string}[]} sorted entries.
  */
 export function vendoredAudioFiles() {
   const found = []
-  const walk = (dir) => {
+  const walk = (dir, key, base) => {
     if (!existsSync(dir)) return
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name)
       if (entry.isDirectory()) {
         if (entry.name === '.download') continue
-        walk(full)
+        walk(full, key, base)
       } else if (entry.name !== 'SOURCE.json') {
-        found.push(relative(AUDIO_VENDOR_DIR, full).split(sep).join('/'))
+        found.push({ path: `${key}/${relative(base, full).split(sep).join('/')}`, base })
       }
     }
   }
-  walk(AUDIO_VENDOR_DIR)
-  return found.sort()
+  walk(AUDIO_MODEL_DIR, 'yamnet', AUDIO_MODEL_DIR)
+  walk(AUDIO_RUNTIME_INSTALL_DIR, 'runtime', AUDIO_RUNTIME_INSTALL_DIR)
+  return found.sort((a, b) => a.path.localeCompare(b.path))
 }
 
 /**
@@ -206,7 +255,10 @@ export function vendoredAudioFiles() {
 export function audioInstallState() {
   const state = audioEventState()
   const manifest = readAudioManifest()
-  const files = vendoredAudioFiles().map((path) => ({ path, bytes: statSync(join(AUDIO_VENDOR_DIR, path)).size }))
+  const files = vendoredAudioFiles().map(({ path, base }) => ({
+    path,
+    bytes: statSync(join(base, ...path.split('/').slice(1))).size,
+  }))
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0)
   return {
     ...state,
@@ -216,14 +268,18 @@ export function audioInstallState() {
     totalBytes,
     modelBytes: files.filter((f) => f.path.startsWith('yamnet/')).reduce((s, f) => s + f.bytes, 0),
     runtimeBytes: files.filter((f) => f.path.startsWith('runtime/')).reduce((s, f) => s + f.bytes, 0),
+    modelDir: AUDIO_MODEL_DIR,
+    runtimeInstallDir: AUDIO_RUNTIME_INSTALL_DIR,
   }
 }
 
 /**
  * Verify the installed tree against the recorded hashes.
  *
- * Only files the manifest actually records are checked; the point is to notice tampering or a
- * truncated install, not to re-derive the whole tree.
+ * Checks the files the manifest records **wherever they now resolve to**, so a manifest that
+ * names a legacy `vendor/audio` tree is verified against that tree rather than against a shared
+ * home that has never been installed. Only recorded files are checked; the point is to notice
+ * tampering or a truncated install, not to re-derive the whole tree.
  *
  * @returns {{checked: number, mismatched: object[], missing: string[]}} the verdict.
  */
@@ -234,8 +290,8 @@ export function verifyInstalledAudio() {
   let checked = 0
 
   for (const record of manifest?.files ?? []) {
-    const full = join(AUDIO_VENDOR_DIR, record.path.split('/').join(sep))
-    if (!existsSync(full)) {
+    const full = resolveInstalledFile(record.path)
+    if (full === null || !existsSync(full)) {
       missing.push(record.path)
       continue
     }
@@ -246,6 +302,38 @@ export function verifyInstalledAudio() {
     }
   }
   return { checked, mismatched, missing }
+}
+
+/**
+ * Where a manifest path — `yamnet/…` or `runtime/…` — lives on this machine.
+ *
+ * The shared home first, then the legacy tree the manifest itself came from, so a machine that
+ * installed before the shared home is verified against the files it actually has.
+ *
+ * @param {string} path - a manifest path.
+ * @returns {string|null} the absolute path, or null when it belongs to neither tree.
+ */
+export function resolveInstalledFile(path) {
+  const [key, ...rest] = path.split('/')
+  if (key === 'yamnet') {
+    const direct = join(AUDIO_MODEL_DIR, ...rest)
+    if (existsSync(direct)) return direct
+    for (const root of legacyAudioRoots()) {
+      const legacy = join(root, 'yamnet', ...rest)
+      if (existsSync(legacy)) return legacy
+    }
+    return direct
+  }
+  if (key === 'runtime') {
+    const direct = join(AUDIO_RUNTIME_INSTALL_DIR, ...rest)
+    if (existsSync(direct)) return direct
+    for (const root of legacyAudioRoots()) {
+      const legacy = join(root, 'runtime', ...rest)
+      if (existsSync(legacy)) return legacy
+    }
+    return direct
+  }
+  return null
 }
 
 /**
@@ -260,8 +348,8 @@ export function verifyInstalledAudio() {
  */
 export function writeAudioManifest(extras = {}) {
   const existing = readAudioManifest() ?? {}
-  const files = vendoredAudioFiles().map((path) => {
-    const full = join(AUDIO_VENDOR_DIR, path.split('/').join(sep))
+  const files = vendoredAudioFiles().map(({ path, base }) => {
+    const full = join(base, ...path.split('/').slice(1))
     return { path, bytes: statSync(full).size, sha256: sha256File(full) }
   })
 
@@ -279,10 +367,14 @@ export function writeAudioManifest(extras = {}) {
         unpackedSize,
       })),
     },
+    directories: {
+      model: AUDIO_MODEL_DIR,
+      runtime: AUDIO_RUNTIME_INSTALL_DIR,
+    },
     modelFiles: AUDIO_MODEL.files.map(({ name, url, target }) => ({
       name,
       url,
-      path: relative(AUDIO_VENDOR_DIR, target).split(sep).join('/'),
+      path: relative(AUDIO_MODEL_DIR, target).split(sep).join('/'),
     })),
     files,
     totals: {
@@ -295,7 +387,7 @@ export function writeAudioManifest(extras = {}) {
     recordedAt: new Date().toISOString(),
   }
 
-  mkdirSync(AUDIO_VENDOR_DIR, { recursive: true })
+  mkdirSync(AUDIO_MODEL_DIR, { recursive: true })
   writeFileSync(AUDIO_MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`)
   return manifest
 }
@@ -312,10 +404,11 @@ export function writeAudioManifest(extras = {}) {
  * @param {string} archive - the downloaded `.tgz`.
  * @param {string} destination - where kept files are written.
  * @param {(line: string) => void} [onProgress] - progress callback.
+ * @param {string} [base] - the directory recorded file paths are relative to. Defaults to the shared runtime directory.
  * @returns {Promise<{files: string[], bytes: number, pruned: number}>} what was written.
  * @throws {Error} when `tar` fails.
  */
-export async function extractRuntimePackage(pkg, archive, destination, onProgress) {
+export async function extractRuntimePackage(pkg, archive, destination, onProgress, base = AUDIO_RUNTIME_INSTALL_DIR) {
   mkdirSync(destination, { recursive: true })
   const members = pkg.keep.map((entry) => `package/${entry}`)
   onProgress?.(`解包 ${pkg.name}@${pkg.version}（保留 ${members.length} 项）`)
@@ -342,7 +435,7 @@ export async function extractRuntimePackage(pkg, archive, destination, onProgres
       const full = join(dir, entry.name)
       if (entry.isDirectory()) walk(full)
       else {
-        files.push(relative(AUDIO_VENDOR_DIR, full).split(sep).join('/'))
+        files.push(relative(base, full).split(sep).join('/'))
         bytes += statSync(full).size
       }
     }
@@ -484,7 +577,8 @@ export async function installAudio(options = {}) {
   }
 
   mkdirSync(AUDIO_SCRATCH_DIR, { recursive: true })
-  mkdirSync(join(AUDIO_VENDOR_DIR, 'yamnet'), { recursive: true })
+  mkdirSync(AUDIO_MODEL_DIR, { recursive: true })
+  mkdirSync(AUDIO_RUNTIME_INSTALL_DIR, { recursive: true })
 
   // --- model ---
   const model = []
@@ -535,7 +629,7 @@ export async function installAudio(options = {}) {
       onProgress(`  ${pkg.name} integrity 校验通过`)
       const destination = runtimePackageDir(pkg.name)
       rmSync(destination, { recursive: true, force: true })
-      const extracted = await extractRuntimePackage(pkg, archive, destination, onProgress)
+      const extracted = await extractRuntimePackage(pkg, archive, destination, onProgress, AUDIO_RUNTIME_INSTALL_DIR)
       runtime.push({ name: pkg.name, version: pkg.version, integrity, ...extracted })
     } finally {
       rmSync(archive, { force: true })
@@ -547,50 +641,49 @@ export async function installAudio(options = {}) {
   const state = audioEventState()
   onProgress(
     `完成：${manifest.totals.files} 个文件，共 ${(manifest.totals.bytes / 1024 / 1024).toFixed(2)} MB` +
-      `（模型 ${(manifest.totals.modelBytes / 1024 / 1024).toFixed(2)} MB + 运行时 ${(manifest.totals.runtimeBytes / 1024 / 1024).toFixed(2)} MB）`,
+      `（模型 ${(manifest.totals.modelBytes / 1024 / 1024).toFixed(2)} MB → ${AUDIO_MODEL_DIR}，` +
+      `运行时 ${(manifest.totals.runtimeBytes / 1024 / 1024).toFixed(2)} MB → ${AUDIO_RUNTIME_INSTALL_DIR}）`,
   )
 
   return { installed: true, skipped: false, model, runtime, verify, state, manifest }
 }
 
 /**
- * Copy an already-installed tree from a sibling plugin instead of downloading it again.
+ * Copy an already-installed tree from a legacy location instead of downloading it again.
  *
  * The muxing plugin held this runtime before it moved here, and a machine that ran
- * `video_setup {action:"install_audio"}` then has all 28 MB of it sitting in a sibling checkout.
- * Re-downloading would be wasteful and, on a metered or offline machine, impossible. So an
- * install first looks for a complete sibling copy and copies it in, verifying hashes afterwards
- * exactly as a fresh download would be verified.
+ * `video_setup {action:"install_audio"}` then has all 28 MB of it sitting in a sibling checkout or
+ * in this plugin's own `vendor/audio`. Re-downloading would be wasteful and, on a metered or
+ * offline machine, impossible. So an install first looks for a complete legacy copy and copies it
+ * into the shared home, verifying hashes afterwards exactly as a fresh download would be.
  *
- * Nothing is written to the sibling, and a sibling copy that is incomplete is ignored rather
- * than half-adopted.
+ * Nothing is written to the source, and a copy that is incomplete is ignored rather than
+ * half-adopted.
  *
  * @param {(line: string) => void} onProgress - progress callback.
  * @returns {{adopted: boolean, from: string|null, files: number}} what happened.
  */
 export function adoptSiblingAudio(onProgress = () => {}) {
-  const own = resolve(AUDIO_VENDOR_DIR)
-  for (const candidate of audioDirCandidates()) {
+  const own = [resolve(AUDIO_MODEL_DIR), resolve(join(AUDIO_MODEL_DIR, '..'))]
+  for (const candidate of legacyAudioRoots()) {
     const source = resolve(candidate)
-    if (source === own) continue
+    if (own.includes(source) || source === resolve(AUDIO_RUNTIME_INSTALL_DIR)) continue
     // Judged by the files detection loads, not by a manifest: a candidate that claims to be
     // installed but is missing the WASM binary would be adopted and then fail at inference.
-    const complete = [
-      join(source, 'yamnet', 'yamnet.onnx'),
-      join(source, 'yamnet', 'yamnet_class_map.csv'),
-      join(source, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort.wasm.mjs'),
-      join(source, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm'),
-    ].every((path) => existsSync(path))
-    if (!complete) continue
+    if (completenessOf(source) < 4) continue
 
-    onProgress(`发现同级插件里已装好的音频资源：${source}，直接复用而不重新下载。`)
-    for (const relativePath of ['yamnet', 'runtime']) {
-      const from = join(source, relativePath)
-      if (!existsSync(from)) continue
-      const to = join(AUDIO_VENDOR_DIR, relativePath)
-      rmSync(to, { recursive: true, force: true })
-      mkdirSync(dirname(to), { recursive: true })
-      cpSync(from, to, { recursive: true })
+    onProgress(`发现旧位置里已装好的音频资源：${source}，直接复制进共享目录而不重新下载。`)
+    const model = join(source, 'yamnet')
+    if (existsSync(model)) {
+      rmSync(AUDIO_MODEL_DIR, { recursive: true, force: true })
+      mkdirSync(AUDIO_MODEL_DIR, { recursive: true })
+      cpSync(model, AUDIO_MODEL_DIR, { recursive: true })
+    }
+    const runtime = join(source, 'runtime', 'node_modules')
+    if (existsSync(runtime)) {
+      rmSync(AUDIO_RUNTIME_INSTALL_DIR, { recursive: true, force: true })
+      mkdirSync(AUDIO_RUNTIME_INSTALL_DIR, { recursive: true })
+      cpSync(runtime, join(AUDIO_RUNTIME_INSTALL_DIR, 'node_modules'), { recursive: true })
     }
     writeAudioManifest()
     const verify = verifyInstalledAudio()
@@ -600,25 +693,42 @@ export function adoptSiblingAudio(onProgress = () => {}) {
 }
 
 /**
- * Remove the vendored audio tree.
+ * Remove the shared audio assets.
+ *
+ * Two directories in the shared home are this plugin's to delete: `models/yamnet` (the model, the
+ * class table, the manifest) and `lib/onnxruntime-web` (the runtime, which matting also loads —
+ * removing it therefore breaks matting until this installer runs again, which is what the caller
+ * is asking for). A legacy `vendor/audio` tree is left alone: it is a leftover the caller may
+ * still be reading from, and deleting a directory outside the shared home is not this action's
+ * business.
+ *
  * @param {{onProgress?: (line: string) => void}} [options] - progress callback.
- * @returns {{removed: boolean, directory: string, stillVisibleFrom: string|null}} the outcome.
+ * @returns {{removed: boolean, directory: string, stillVisibleFrom: string|null, removedRuntime: boolean}} the outcome.
  */
 export function removeAudio(options = {}) {
   const onProgress = options.onProgress ?? (() => {})
-  if (!existsSync(AUDIO_VENDOR_DIR)) {
-    onProgress('没有已安装的音频运行时可供删除。')
-    return { removed: false, directory: AUDIO_VENDOR_DIR, stillVisibleFrom: null }
+  const hadModel = existsSync(AUDIO_MODEL_DIR)
+  const hadRuntime = existsSync(AUDIO_RUNTIME_INSTALL_DIR)
+  if (!hadModel && !hadRuntime) {
+    onProgress(`共享目录里没有已安装的音频资源可供删除（${AUDIO_MODEL_DIR}、${AUDIO_RUNTIME_INSTALL_DIR}）。`)
+    return { removed: false, directory: AUDIO_MODEL_DIR, stillVisibleFrom: null, removedRuntime: false }
   }
-  rmSync(AUDIO_VENDOR_DIR, { recursive: true, force: true })
-  onProgress(`已删除 ${AUDIO_VENDOR_DIR}`)
-  // A sibling copy is somebody else's directory: deleting it here would reach outside this
-  // plugin. Saying so is the honest alternative, because detection would keep working and the
+  if (hadModel) {
+    rmSync(AUDIO_MODEL_DIR, { recursive: true, force: true })
+    onProgress(`已删除 ${AUDIO_MODEL_DIR}`)
+  }
+  if (hadRuntime) {
+    rmSync(AUDIO_RUNTIME_INSTALL_DIR, { recursive: true, force: true })
+    onProgress(`已删除 ${AUDIO_RUNTIME_INSTALL_DIR}（抠图的推理运行时也在这里，抠图会一起不可用，直到重装）`)
+  }
+
+  // A legacy copy is somebody else's directory: deleting it here would reach outside the shared
+  // home. Saying so is the honest alternative, because detection would keep working and the
   // caller would otherwise believe it had been removed.
   const state = audioEventState()
-  const stillVisibleFrom = state.available ? state.vendorDir : null
+  const stillVisibleFrom = state.available ? state.modelDir : null
   if (stillVisibleFrom !== null) {
-    onProgress(`注意：${stillVisibleFrom} 里还有一份同级插件的副本，检测仍然可用；本插件无法也不应删除它。`)
+    onProgress(`注意：${stillVisibleFrom} 里还有一份旧位置的副本，检测仍然可用；本插件不会替你删掉它。`)
   }
-  return { removed: true, directory: AUDIO_VENDOR_DIR, stillVisibleFrom }
+  return { removed: true, directory: AUDIO_MODEL_DIR, stillVisibleFrom, removedRuntime: hadRuntime }
 }

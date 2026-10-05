@@ -17,7 +17,7 @@ import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync
 import { readFile, writeFile } from 'node:fs/promises'
 import { request as httpsRequest } from 'node:https'
 import { join } from 'node:path'
-import { PLUGIN_ROOT } from './env.mjs'
+import { SHARED_FFMPEG_BIN, SHARED_FFMPEG_DIR, sharedHomeState } from './home.mjs'
 import { connectThroughProxy, systemProxy } from './proxy.mjs'
 
 // Re-exported because these were part of this module's surface before the proxy moved to
@@ -120,11 +120,11 @@ async function fetchOnce(url, options = {}) {
   })
 }
 
-/** Where the vendored build lives. */
-export const VENDOR_DIR = join(PLUGIN_ROOT, 'vendor', 'ffmpeg')
+/** Where a build would be, if this plugin installed one: the shared home, owned by `dsh-ffmpeg`. */
+export const VENDOR_DIR = SHARED_FFMPEG_DIR
 
-/** The binary directory the pipeline discovers. */
-export const VENDOR_BIN_DIR = join(VENDOR_DIR, 'bin')
+/** The binary directory this plugin does not write, but reports on. */
+export const VENDOR_BIN_DIR = SHARED_FFMPEG_BIN
 
 /** BtbN's Windows GPL static build release feed. */
 export const DEFAULT_RELEASE_BASE = 'https://github.com/BtbN/FFmpeg-Builds/releases/download'
@@ -281,35 +281,53 @@ export async function extractBinaries(archivePath, targetDir, onProgress) {
 }
 
 /**
- * Report what the vendored build currently looks like.
- * @returns {{present: boolean, directory: string, files: string[], sizeBytes: number}} the state.
+ * Report what is installed in the shared home, without running anything.
+ *
+ * This plugin does not install ffmpeg — `dsh-ffmpeg` owns that — so this reports whether a build
+ * is present where an install would have put it, not whether one can be resolved (PATH and a
+ * sibling checkout are covered by `findBinary`).
+ *
+ * @returns {{present: boolean, directory: string, binDir: string, files: string[], sizeBytes: number, shared: object}} the state.
  */
 export function vendoredState() {
-  if (!existsSync(VENDOR_BIN_DIR)) return { present: false, directory: VENDOR_BIN_DIR, files: [], sizeBytes: 0 }
-  const files = readdirSync(VENDOR_BIN_DIR)
+  const base = {
+    directory: SHARED_FFMPEG_DIR,
+    binDir: SHARED_FFMPEG_BIN,
+    location: 'home',
+    shared: sharedHomeState(),
+  }
+  if (!existsSync(SHARED_FFMPEG_BIN)) return { present: false, ...base, files: [], sizeBytes: 0 }
+  const files = readdirSync(SHARED_FFMPEG_BIN)
   let sizeBytes = 0
   for (const file of files) {
     try {
-      sizeBytes += statSync(join(VENDOR_BIN_DIR, file)).size
+      sizeBytes += statSync(join(SHARED_FFMPEG_BIN, file)).size
     } catch {
       // A file that vanished mid-listing simply does not count.
     }
   }
-  return { present: true, directory: VENDOR_BIN_DIR, files, sizeBytes }
+  return { present: files.length > 0, ...base, files, sizeBytes }
 }
 
 /**
- * Remove the vendored build.
+ * Remove the shared build.
+ *
+ * This plugin does not own that directory — `dsh-ffmpeg` installs ffmpeg — so removing it here is
+ * a deliberate act that breaks every plugin in the family until one reinstalls it.
+ *
  * @returns {boolean} whether anything was removed.
  */
 export function removeVendored() {
-  if (!existsSync(VENDOR_DIR)) return false
-  rmSync(VENDOR_DIR, { recursive: true, force: true })
+  if (!existsSync(SHARED_FFMPEG_DIR)) return false
+  rmSync(SHARED_FFMPEG_DIR, { recursive: true, force: true })
   return true
 }
 
 /**
- * Download and install ffmpeg into the vendor directory.
+ * Download and install ffmpeg into the shared home.
+ *
+ * Kept because it was part of this module's surface; `dsh-ffmpeg`'s `ffmpeg_setup {action:"install"}`
+ * is the supported way in, and it writes to the same directory with a version-pinned build.
  *
  * @param {object} [options] - install options.
  * @param {(message: string) => void} [options.onProgress] - progress notes.
@@ -323,7 +341,8 @@ export async function installFfmpeg(options = {}) {
     return { installed: false, reason: 'already present', ...state }
   }
 
-  const scratch = join(VENDOR_DIR, 'download.zip')
+  mkdirSync(SHARED_FFMPEG_DIR, { recursive: true })
+  const scratch = join(SHARED_FFMPEG_DIR, 'download.zip')
   const failures = []
   for (const archive of ARCHIVE_CANDIDATES) {
     const url = `${DEFAULT_RELEASE_BASE}/${DEFAULT_RELEASE_TAG}/download/${archive}`
@@ -336,14 +355,14 @@ export async function installFfmpeg(options = {}) {
         }
       })
       options.onProgress?.(`下载完成 ${(bytes / 1024 / 1024).toFixed(1)} MB，sha256 ${sha256}`)
-      const files = await extractBinaries(scratch, VENDOR_BIN_DIR, options.onProgress)
+      const files = await extractBinaries(scratch, SHARED_FFMPEG_BIN, options.onProgress)
       writeFileSync(
-        join(VENDOR_DIR, 'SOURCE.json'),
-        `${JSON.stringify({ url, bytes, sha256, files, installedAt: new Date().toISOString() }, null, 2)}\n`,
+        join(SHARED_FFMPEG_DIR, 'SOURCE.json'),
+        `${JSON.stringify({ url, bytes, sha256, files, installedAt: new Date().toISOString(), ownedBy: 'dsh-ffmpeg' }, null, 2)}\n`,
         { encoding: 'utf8' },
       )
       rmSync(scratch, { force: true })
-      return { installed: true, url, bytes, sha256, files }
+      return { installed: true, url, bytes, sha256, files, directory: SHARED_FFMPEG_DIR }
     } catch (error) {
       failures.push(`${archive}: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -351,6 +370,6 @@ export async function installFfmpeg(options = {}) {
   rmSync(scratch, { force: true })
   throw new InstallError(
     `所有候选构建都安装失败：\n${failures.map((line) => `  - ${line}`).join('\n')}\n` +
-      '可以手动下载 ffmpeg 静态构建，把 ffmpeg.exe / ffprobe.exe 放进 vendor/ffmpeg/bin/。',
+      `可以手动下载 ffmpeg 静态构建，把 ffmpeg.exe / ffprobe.exe 放进 ${SHARED_FFMPEG_BIN}。`,
   )
 }

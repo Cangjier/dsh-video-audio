@@ -27,18 +27,29 @@ profile 里以 `link:` 挂载即可，无需构建步骤（纯 ESM，无第三�
 
 ## 依赖是「借」来的，不是自带的
 
-ffmpeg 有几百 MB，而产出音频的机器通常已经在用它——兄弟插件
-[`video-factory`](https://github.com/Cangjier/video-factory) 为了渲染视频早就装好了。所以本插件
-**不自带** ffmpeg，发现顺序是：
+ffmpeg 有几百 MB，而产出音频的机器通常已经在用它。所以本插件**不自带** ffmpeg，发现顺序是：
 
 ```
-config.ffmpegPath → DSH_AUDIO_FFMPEG → 本插件 vendor/ffmpeg/bin
+config.ffmpegPath → DSH_AUDIO_FFMPEG → 本插件 vendor/ffmpeg/bin（老位置）
+                  → 共享目录 ~/.dsh-plugins/ffmpeg/bin
                   → 同级 video-factory/vendor/ffmpeg/bin → PATH
 ```
 
-同理，YAMNet 模型与推理运行时优先读本插件 `vendor/audio`，其次读同级 video-factory 的旧位置
-（那份是能力迁出之前装在那里的），并且 `audio_setup {action:"install"}` 会**把它复制过来而不是重下**。
-每一次报告里都带 `vendorSource`，说明是哪一条命中的——「在我机器上是好的」必须可解释。
+**共享目录**（`~/.dsh-plugins`）是这六个插件放静态依赖的地方，本插件用它放两样东西：
+
+```
+~/.dsh-plugins/models/yamnet/         YAMNet ONNX + 类别表
+~/.dsh-plugins/lib/onnxruntime-web/   ONNX WASM 运行时（×抠图共用一份，里面是 npm 的
+                                      node_modules 形状——WASM 入口按裸模块名 import
+                                      flatbuffers / long / protobufjs，只有这个形状能解析）
+```
+
+旧位置（本插件 `vendor/audio`、同级 video-factory 的同一路径）仍然读，而且
+`audio_setup {action:"install"}` 会**把它复制进共享目录而不是重下**。每一次报告里都带
+`modelSource` / `runtimeSource`，说明是哪一条命中的——「在我机器上是好的」必须可解释。
+
+`DSH_PLUGIN_HOME` 可以把整个共享根换到别处（比如 D 盘）。`audio_setup {action:"remove"}` 删的是
+共享目录里的模型**和**运行时——抠图也用那份运行时，所以抠图会一起不可用，直到重装。
 
 ## 与 video-factory 的分工
 
@@ -56,7 +67,7 @@ node src/bin/va.mjs doctor         # 报出 ffmpeg 与模型分别来自哪条�
 node src/bin/surface-report.mjs    # 常驻 schema 字节预算
 ```
 
-测试会自动把 ffmpeg 指到本机 vendor 或同级 video-factory 的构建（`tests/helpers.mjs`），
+测试会自动把 ffmpeg 指到共享目录、本机 vendor 或同级 video-factory 的构建（`tests/helpers.mjs`），
 所以一个从未装过 ffmpeg 的 checkout 也能跑。没有 ffmpeg 时，依赖它的用例会**跳过并说明原因**，
 而不是失败。
 

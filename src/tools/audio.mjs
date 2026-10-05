@@ -337,7 +337,7 @@ export function createSetupTool(actions) {
       force: {
         type: 'boolean',
         description:
-          'install: re-fetch even when a verified copy exists; the only way out of a half-unpacked vendor/audio tree, which otherwise makes every later install skip itself.',
+          'install: re-fetch even when a verified copy exists; the only way out of a half-unpacked tree in the shared plugin home, which otherwise makes every later install skip itself.',
       },
       archive: {
         type: 'string',

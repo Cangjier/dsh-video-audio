@@ -1,14 +1,16 @@
 /**
  * `audio_setup` actions: install, remove and report the shared audio assets.
  *
- * Two files make audio event detection possible, and both are read from a directory that is
- * resolved at call time rather than assumed: this plugin's own `vendor/audio`, or — when a
- * machine already ran the installer back when the runtime lived in the sibling muxing plugin —
- * a `video-factory` checkout's copy. That is what `vendorSource: 'sibling'` means in a result:
- * **the files are being read out of a video-factory checkout**, nothing was written there, and
- * `audio_setup {action:"remove"}` will not delete them, because reaching into another plugin's
- * directory is not this plugin's to do. Removing therefore only affects this plugin's own
- * `vendor/audio` tree, and `remove` says so again in `stillVisibleFrom`.
+ * Two things make audio event detection possible — the YAMNet model and the ONNX WASM runtime —
+ * and both are installed into **the shared plugin home** (`~/.dsh-plugins/models/yamnet` and
+ * `~/.dsh-plugins/lib/onnxruntime-web`), which every plugin in the family reads. They are read
+ * from wherever they actually are rather than assumed: a machine that installed them before the
+ * shared home existed still has a complete tree in this plugin's own `vendor/audio` or in a
+ * sibling `video-factory` checkout, and `audio_setup {action:"install"}` copies that in instead of
+ * downloading 28 MB again.
+ *
+ * A legacy tree is never written to or deleted: `remove` clears the shared directories, and says
+ * in `stillVisibleFrom` when a legacy copy means detection would keep working anyway.
  *
  * Nothing here measures anything: this family changes what is on disk, and it is kept apart from
  * `audio_measure` so that "check the machine" and "download 28 MB" are never adjacent choices.

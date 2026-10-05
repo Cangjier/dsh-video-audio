@@ -3,39 +3,50 @@
  *
  * This plugin owns one external dependency — ffmpeg — and it *borrows* rather than owns it.
  * ffmpeg is a few hundred megabytes, and the machine that produces audio almost always already
- * has one, because the sibling `video-factory` plugin downloaded it to render video. Copying it
- * here would mean two 194 MB builds on one disk for no benefit, so discovery reaches into a
- * sibling checkout instead.
+ * has one, because a sibling plugin downloaded it to render video. Copying it here would mean two
+ * builds on one disk for no benefit, so discovery reaches into **the shared plugin home**
+ * (`~/.dsh-plugins/ffmpeg/bin`, one build for all six plugins) and only then into a sibling
+ * checkout.
  *
  * Discovery follows the precedence the sibling plugins established, extended by one case:
  *
  *   1. explicit configuration (`config.ffmpegPath`);
  *   2. this plugin's own environment variable (`DSH_AUDIO_FFMPEG`);
- *   3. a build vendored inside this plugin (`vendor/ffmpeg/bin`);
- *   4. a sibling `video-factory` checkout's vendored build — that is the normal case, and the
- *      report always names which candidate answered, so "it worked on my machine" stays
- *      explainable;
- *   5. `PATH`.
+ *   3. a build vendored inside this plugin (`vendor/ffmpeg/bin`) — the legacy location;
+ *   4. **the shared plugin home**;
+ *   5. a sibling `video-factory` checkout's vendored build;
+ *   6. `PATH`.
  *
- * The same sibling search locates the shared ONNX runtime: `vendor/audio` is where this plugin
- * installs YAMNet, and a sibling `video-factory` may already hold a copy from when the muxing
- * work lived there. Nothing is ever written to a sibling — only read.
+ * `path` still answers last, but every earlier rule names itself in the report, so "it worked on
+ * my machine" stays explainable.
+ *
+ * The shared assets follow the same shape: the YAMNet model lives in
+ * `~/.dsh-plugins/models/yamnet`, the ONNX WASM runtime in `~/.dsh-plugins/lib/onnxruntime-web`,
+ * and `vendor/audio` plus a sibling `video-factory` copy remain as the layouts that existed before
+ * the shared home. Nothing is ever written to a sibling — only read.
  *
  * @module dsh-video-audio/core/env
  */
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import {
+  PLUGIN_ROOT,
+  SHARED_FFMPEG_BIN,
+  SHARED_FFMPEG_DIR,
+  SHARED_RUNTIME_DIR,
+  SHARED_YAMNET_DIR,
+  binaryName,
+  sharedHomeState,
+} from './home.mjs'
 
 const runFile = promisify(execFile)
 
-/** Plugin package root, resolved from this module so a `link:` install still works. */
-export const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+export { PLUGIN_ROOT }
 
-const BINARY_NAME = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
-const PROBE_NAME = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'
+const BINARY_NAME = binaryName('ffmpeg')
+const PROBE_NAME = binaryName('ffprobe')
 
 /** Environment variable that overrides ffmpeg discovery outright. */
 export const FFMPEG_ENV = 'DSH_AUDIO_FFMPEG'
@@ -103,11 +114,11 @@ function siblingPaths(tail) {
 
 /**
  * Locate one borrowed binary: explicit config, then the environment, then a vendored build,
- * then a sibling plugin's vendored build, then PATH.
+ * then the shared plugin home, then a sibling plugin's vendored build, then PATH.
  *
  * @param {'ffmpeg'|'ffprobe'} stem - which binary.
  * @param {string|null} explicit - a configured path.
- * @returns {{path: string, source: 'config'|'env'|'vendor'|'sibling'|'path'}|null} where it was found.
+ * @returns {{path: string, source: 'config'|'env'|'vendor'|'home'|'sibling'|'path'}|null} where it was found.
  */
 export function findBinary(stem, explicit) {
   if (typeof explicit === 'string' && explicit.trim() !== '' && existsSync(explicit)) {
@@ -122,6 +133,9 @@ export function findBinary(stem, explicit) {
   const name = stem === 'ffmpeg' ? BINARY_NAME : PROBE_NAME
   const vendored = join(PLUGIN_ROOT, 'vendor', 'ffmpeg', 'bin', name)
   if (existsSync(vendored)) return { path: vendored, source: 'vendor' }
+
+  const shared = join(SHARED_FFMPEG_BIN, name)
+  if (existsSync(shared)) return { path: shared, source: 'home' }
 
   for (const directory of siblingPaths('vendor/ffmpeg/bin')) {
     const candidate = join(directory, name)
@@ -153,10 +167,12 @@ export function resolveBinary(stem, explicit) {
 /**
  * Every directory that could hold the shared audio assets, in preference order.
  *
- * The first entry is this plugin's own `vendor/audio`: that is where `audio_setup
- * {action:"install"}` writes, and a local copy always wins over a sibling's.
+ * The **shared plugin home** is the install target now that the runtime is shared with matting
+ * and the model is shared with `video-factory`; the plugin's own `vendor/audio` and a sibling
+ * copy follow, because they are where a machine that installed the runtime before the shared home
+ * put it, and re-downloading 28 MB to move a directory would be absurd.
  *
- * @returns {string[]} candidate `vendor/audio` directories, nearest first.
+ * @returns {string[]} candidate asset directories, nearest first.
  */
 export function audioDirCandidates() {
   return audioDirCandidatesWithSource().map((candidate) => candidate.dir)
@@ -168,7 +184,7 @@ export function audioDirCandidates() {
  * The label is what makes "it works on my machine" answerable: every state report names the
  * directory AND which rule found it, so a machine reading a sibling checkout can say so.
  *
- * @returns {{dir: string, source: 'config'|'env'|'vendor'|'sibling'}[]} candidates, nearest first.
+ * @returns {{dir: string, source: 'config'|'env'|'home'|'vendor'|'sibling'}[]} candidates, nearest first.
  */
 export function audioDirCandidatesWithSource() {
   const candidates = []
@@ -176,24 +192,122 @@ export function audioDirCandidatesWithSource() {
   if (typeof process.env[AUDIO_DIR_ENV] === 'string' && process.env[AUDIO_DIR_ENV].trim() !== '') {
     candidates.push({ dir: resolve(process.env[AUDIO_DIR_ENV]), source: 'env' })
   }
+  candidates.push({ dir: SHARED_YAMNET_DIR, source: 'home' })
   candidates.push({ dir: join(PLUGIN_ROOT, 'vendor', 'audio'), source: 'vendor' })
   for (const directory of siblingPaths('vendor/audio')) candidates.push({ dir: directory, source: 'sibling' })
   return candidates
 }
 
 /**
- * The directory the shared audio assets are actually read from.
+ * The `onnxruntime-web` package directory inside a runtime install root.
  *
- * @returns {{dir: string, source: 'config'|'env'|'vendor'|'sibling'}} the first candidate that
- *   exists, falling back to this plugin's own directory when none does.
+ * The shared home keeps npm's own shape — `lib/onnxruntime-web/node_modules/onnxruntime-web`,
+ * beside its four dependencies — because the WASM entry point imports `flatbuffers`, `long` and
+ * `protobufjs` by bare specifier, and Node resolves those by walking up from the importing file.
+ * Put the package anywhere else and the import fails at load time.
+ */
+export const SHARED_ORT_PACKAGE = join(SHARED_RUNTIME_DIR, 'node_modules', 'onnxruntime-web')
+
+/**
+ * Every directory the shared audio assets are actually read from, in one answer.
+ *
+ * The model and the runtime are two separate downloads that happen to have been installed
+ * together, and a machine can legitimately have one and not the other. Each therefore resolves on
+ * its own, and each answer names the rule that produced it:
+ *
+ *   - the **model** comes from `~/.dsh-plugins/models/yamnet` when it is there, otherwise from a
+ *     legacy `vendor/audio` tree, otherwise from the shared home (where an install will put it);
+ *   - the **runtime** comes from `~/.dsh-plugins/lib/onnxruntime-web` when it is there, otherwise
+ *     from the `runtime/node_modules/onnxruntime-web` inside a legacy tree.
+ *
+ * @returns {object} the resolved asset set, every path absolute.
+ */
+export function resolveAudioAssets() {
+  const runtimeEntry = join(SHARED_ORT_PACKAGE, 'dist', 'ort.wasm.mjs')
+  const runtimeBinary = join(SHARED_ORT_PACKAGE, 'dist', 'ort-wasm-simd-threaded.wasm')
+  const runtimeLoader = join(SHARED_ORT_PACKAGE, 'dist', 'ort-wasm-simd-threaded.mjs')
+  const shared = {
+    dir: SHARED_YAMNET_DIR,
+    source: 'home',
+    manifest: join(SHARED_YAMNET_DIR, 'SOURCE.json'),
+    model: join(SHARED_YAMNET_DIR, 'yamnet.onnx'),
+    classMap: join(SHARED_YAMNET_DIR, 'yamnet_class_map.csv'),
+    modelDir: SHARED_YAMNET_DIR,
+    modelSource: 'home',
+    runtimeDir: SHARED_RUNTIME_DIR,
+    runtimePackageDir: SHARED_ORT_PACKAGE,
+    runtimeSource: 'home',
+    runtimeEntry,
+    runtimeBinary,
+    runtimeLoader,
+  }
+
+  // A configured or environment directory names a whole legacy tree, model and runtime together,
+  // and wins outright: it is the operator saying where to look, which is not a guess to improve on.
+  const explicit = audioDirCandidatesWithSource().find(
+    (candidate) => candidate.source === 'config' || candidate.source === 'env',
+  )
+  const legacyRoots = [
+    ...(explicit === undefined ? [] : [explicit.dir]),
+    join(PLUGIN_ROOT, 'vendor', 'audio'),
+    ...siblingPaths('vendor/audio'),
+  ]
+
+  for (const root of legacyRoots) {
+    const model = join(root, 'yamnet', 'yamnet.onnx')
+    const entry = join(root, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort.wasm.mjs')
+    const modelThere = existsSync(model)
+    const runtimeThere = existsSync(entry)
+    if (!modelThere && !runtimeThere) continue
+    const source = root === explicit?.dir ? explicit.source : root === join(PLUGIN_ROOT, 'vendor', 'audio') ? 'vendor' : 'sibling'
+    return {
+      ...shared,
+      dir: root,
+      source,
+      manifest: join(root, 'SOURCE.json'),
+      manifestSource: source,
+      modelDir: modelThere ? root : shared.modelDir,
+      modelSource: modelThere ? source : 'home',
+      runtimeDir: runtimeThere ? root : shared.runtimeDir,
+      runtimePackageDir: runtimeThere ? join(root, 'runtime', 'node_modules', 'onnxruntime-web') : shared.runtimePackageDir,
+      runtimeSource: runtimeThere ? source : 'home',
+      model: modelThere ? model : shared.model,
+      classMap: modelThere ? join(root, 'yamnet', 'yamnet_class_map.csv') : shared.classMap,
+      runtimeEntry: runtimeThere ? entry : shared.runtimeEntry,
+      runtimeBinary: runtimeThere
+        ? join(root, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm')
+        : shared.runtimeBinary,
+      runtimeLoader: runtimeThere
+        ? join(root, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.mjs')
+        : shared.runtimeLoader,
+    }
+  }
+
+  return shared
+}
+
+/**
+ * The directory the legacy shared assets are read from, kept for the reports that name one path.
+ *
+ * @returns {{dir: string, source: 'config'|'env'|'home'|'vendor'|'sibling'}} the first candidate that
+ *   exists, falling back to the shared home's model directory when none does.
  */
 export function resolveAudioDir() {
-  const candidates = audioDirCandidatesWithSource()
-  for (const candidate of candidates) {
-    if (existsSync(candidate.dir)) return candidate
+  const assets = resolveAudioAssets()
+  return { dir: assets.modelDir, source: assets.modelSource }
+}
+
+/**
+ * The shared home, as a report.
+ * @returns {object} where the root came from, and the two asset directories inside it.
+ */
+export function sharedAssetsState() {
+  return {
+    ...sharedHomeState(),
+    modelDir: SHARED_YAMNET_DIR,
+    runtimeDir: SHARED_RUNTIME_DIR,
+    ffmpegDir: SHARED_FFMPEG_DIR,
   }
-  // Nothing exists yet: report the install target, which is where an install will put it.
-  return candidates.find((candidate) => candidate.source === 'vendor') ?? candidates[0]
 }
 
 /**

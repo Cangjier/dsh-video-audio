@@ -338,16 +338,16 @@ export const REGISTRY = {
       },
       install: {
         summary:
-          'fetch and verify the YAMNet model and the shared ONNX runtime into this plugin\'s vendor/audio, or adopt a verified copy from a sibling video-factory checkout without downloading.',
+          'fetch and verify the YAMNet model and the shared ONNX runtime into the shared plugin home (~/.dsh-plugins/models/yamnet and ~/.dsh-plugins/lib/onnxruntime-web), or copy a verified legacy vendor/audio tree in without downloading.',
         use: 'once, before the first audio_events call.',
         avoid: 'it is 28MB over the network: check status first, and do not pass force unless verification actually failed.',
         required: [],
         returns: '{ installed, skipped, adopted?, from?, model[], runtime[], verify{ checked, mismatched[], missing[] }, state }',
-        cost: 'a few minutes and about 28MB, or seconds and no network when a sibling copy is adopted. The model is pinned by per-file SHA-256 and the runtime by each npm tarball\'s published sha512.',
+        cost: 'a few minutes and about 28MB, or seconds and no network when a legacy copy is adopted. The model is pinned by per-file SHA-256 and the runtime by each npm tarball\'s published sha512.',
         gotchas: [
           'A second call is a no-op: the skip test requires the files to be present AND to match the manifest, so a half-unpacked tree does not look installed.',
-          'The runtime installed here is shared with the matting model in video-factory: install_matte reads this directory when it has no copy of its own, which is why removing it can disable matting too.',
-          'Adoption copies from a sibling; it never moves or deletes anything there.',
+          'The runtime installed here is shared with the matting model in video-factory: install_matte reads the same lib/onnxruntime-web directory, which is why removing it can disable matting too.',
+          'Adoption copies from a legacy tree; it never moves or deletes anything there.',
         ],
         example: { action: 'install' },
         seeAlso: ['status', 'remove'],

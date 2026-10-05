@@ -2,11 +2,12 @@
  * Test-harness setup: point the plugin at an ffmpeg that exists.
  *
  * The plugin borrows ffmpeg rather than vendoring its own copy — that is the whole point of the
- * discovery order — so a checkout that has never run `install_ffmpeg` still works, provided the
- * sibling `video-factory` checkout beside it has one. The resolver already reaches there, but only
+ * discovery order — so a checkout that has never installed one still works, provided **the shared
+ * plugin home** (`~/.dsh-plugins/ffmpeg/bin`), this plugin's own `vendor/ffmpeg/bin`, or a sibling
+ * `video-factory` checkout beside it has a build. The resolver already reaches all three, but only
  * when the environment does not point somewhere wrong: a machine with an unrelated `ffmpeg.exe`
  * on PATH would otherwise resolve *that* one, and the numbers this suite asserts were measured
- * with the vendored build.
+ * with the shared build.
  *
  * So this module finds the intended binary once, at import time, and pins it through the two
  * environment variables the plugin documents. It is imported for that side effect.
@@ -19,25 +20,29 @@
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { PLUGIN_ROOT, FFMPEG_ENV, FFPROBE_ENV, findBinary, resetToolCache } from '../src/core/index.mjs'
+import { SHARED_FFMPEG_BIN } from '../src/core/home.mjs'
 
 const BINARY = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
 const PROBE = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'
 
-/** Sibling checkouts that may already hold a vendored build, nearest first. */
-function siblingBinDirectories() {
+/** Every binary directory the plugin itself would search, nearest first. */
+function binDirectories() {
   const roots = [resolve(PLUGIN_ROOT, '..'), resolve(PLUGIN_ROOT, '..', '..')]
-  return roots.map((root) => join(root, 'video-factory', 'vendor', 'ffmpeg', 'bin'))
+  return [
+    SHARED_FFMPEG_BIN,
+    join(PLUGIN_ROOT, 'vendor', 'ffmpeg', 'bin'),
+    ...roots.map((root) => join(root, 'video-factory', 'vendor', 'ffmpeg', 'bin')),
+  ]
 }
 
 /**
- * Find ffmpeg for the suite: this checkout's vendor, then a sibling video-factory's, then PATH.
+ * Find ffmpeg for the suite: the shared home, then this checkout's vendor, then a sibling's.
  *
  * @returns {{ffmpeg: string, ffprobe: string, from: string}|null} the pair, or null when neither
  *   binary can be found anywhere.
  */
 function locate() {
-  const candidates = [join(PLUGIN_ROOT, 'vendor', 'ffmpeg', 'bin'), ...siblingBinDirectories()]
-  for (const directory of candidates) {
+  for (const directory of binDirectories()) {
     const ffmpeg = join(directory, BINARY)
     const ffprobe = join(directory, PROBE)
     if (existsSync(ffmpeg) && existsSync(ffprobe)) return { ffmpeg, ffprobe, from: directory }
@@ -51,7 +56,7 @@ const found = locate()
 export const FFMPEG_FROM = found?.from ?? null
 
 /** The reason an ffmpeg-backed test is skipping, or null when it can run. */
-export const FFMPEG_SKIP = found === null ? 'ffmpeg 未找到：本机 vendor/ffmpeg、同级 video-factory/vendor/ffmpeg 与 PATH 都没有。' : null
+export const FFMPEG_SKIP = found === null ? 'ffmpeg 未找到：共享目录 ~/.dsh-plugins/ffmpeg/bin、本机 vendor/ffmpeg 与同级 video-factory/vendor/ffmpeg 都没有。' : null
 
 if (found !== null) {
   // Pinned through the documented environment variables rather than left to PATH, because the

@@ -552,12 +552,12 @@ const COMMANDS = {
     const problems = []
     if (ffmpeg === null) {
       problems.push(
-        '找不到 ffmpeg。查找顺序：config.ffmpegPath → 环境变量 DSH_AUDIO_FFMPEG → 本插件 vendor/ffmpeg/bin/ → 同级 video-factory/vendor/ffmpeg/bin/ → PATH。',
+        '找不到 ffmpeg。查找顺序：config.ffmpegPath → 环境变量 DSH_AUDIO_FFMPEG → 本插件 vendor/ffmpeg/bin/ → 共享目录 ~/.dsh-plugins/ffmpeg/bin → 同级 video-factory/vendor/ffmpeg/bin/ → PATH。',
       )
     }
     if (ffprobe === null) {
       problems.push(
-        '找不到 ffprobe。查找顺序：config.ffprobePath → 环境变量 DSH_AUDIO_FFPROBE → 本插件 vendor/ffmpeg/bin/ → 同级 video-factory/vendor/ffmpeg/bin/ → PATH。',
+        '找不到 ffprobe。查找顺序：config.ffprobePath → 环境变量 DSH_AUDIO_FFPROBE → 本插件 vendor/ffmpeg/bin/ → 共享目录 ~/.dsh-plugins/ffmpeg/bin → 同级 video-factory/vendor/ffmpeg/bin/ → PATH。',
       )
     }
 

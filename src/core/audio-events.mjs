@@ -21,7 +21,8 @@ import { existsSync, readFileSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { PLUGIN_ROOT, resolveAudioDir } from './env.mjs'
+import { PLUGIN_ROOT, resolveAudioAssets } from './env.mjs'
+import { SHARED_RUNTIME_DIR, SHARED_YAMNET_DIR } from './home.mjs'
 import { resolveTool } from './ffmpeg.mjs'
 
 /** Error type for an audio-analysis request this plugin refuses or cannot carry out. */
@@ -33,64 +34,60 @@ export class AudioEventError extends Error {
 }
 
 /**
- * Where the shared runtime and model live when nothing has been resolved yet.
+ * Where the shared runtime and model are installed: the shared plugin home.
  *
- * This is the install target — `audio_setup {action:"install"}` always writes here — and the
- * last resort for reading. Use {@link audioPaths} for anything that reads.
+ * The model and the runtime are two separate directories there (`models/yamnet` and
+ * `lib/onnxruntime-web`), because matting shares the runtime while only audio detection uses the
+ * model. {@link audioPaths} answers where each one actually is, wherever it was installed.
  */
-export const AUDIO_VENDOR_DIR = join(PLUGIN_ROOT, 'vendor', 'audio')
+export const AUDIO_VENDOR_DIR = SHARED_YAMNET_DIR
 
-/** The manifest recording provenance and hashes. */
-export const AUDIO_MANIFEST = join(AUDIO_VENDOR_DIR, 'SOURCE.json')
+/** The directory the ONNX WASM runtime is installed into. */
+export const AUDIO_RUNTIME_DIR = SHARED_RUNTIME_DIR
 
-/** The ONNX model. */
-export const YAMNET_MODEL = join(AUDIO_VENDOR_DIR, 'yamnet', 'yamnet.onnx')
+/** The manifest recording provenance and hashes, beside the model it describes. */
+export const AUDIO_MANIFEST = join(SHARED_YAMNET_DIR, 'SOURCE.json')
 
-/** The 521-class AudioSet label table. */
-export const YAMNET_CLASS_MAP = join(AUDIO_VENDOR_DIR, 'yamnet', 'yamnet_class_map.csv')
+/** The ONNX model, at its install location. Use {@link audioPaths} for anything that reads. */
+export const YAMNET_MODEL = join(SHARED_YAMNET_DIR, 'yamnet.onnx')
+
+/** The 521-class AudioSet label table, at its install location. */
+export const YAMNET_CLASS_MAP = join(SHARED_YAMNET_DIR, 'yamnet_class_map.csv')
 
 /** Scratch directory for decoded WAV. */
 export const AUDIO_TMP_DIR = join(PLUGIN_ROOT, 'tmp', 'audio')
 
-/** The WASM entry point inside the vendored runtime. */
-export const ORT_WASM_ENTRY = join(
-  AUDIO_VENDOR_DIR,
-  'runtime',
-  'node_modules',
-  'onnxruntime-web',
-  'dist',
-  'ort.wasm.mjs',
-)
+/** The WASM entry point inside the installed runtime. */
+export const ORT_WASM_ENTRY = join(SHARED_RUNTIME_DIR, 'node_modules', 'onnxruntime-web', 'dist', 'ort.wasm.mjs')
 
 /** The WASM binary the entry point loads. */
-export const ORT_WASM_BINARY = join(
-  AUDIO_VENDOR_DIR,
-  'runtime',
-  'node_modules',
-  'onnxruntime-web',
-  'dist',
-  'ort-wasm-simd-threaded.wasm',
-)
+export const ORT_WASM_BINARY = join(SHARED_RUNTIME_DIR, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm')
 
 /**
- * Resolve the four files detection needs, wherever they actually are.
+ * Resolve the files detection needs, wherever they actually are.
  *
- * The search prefers this plugin's own `vendor/audio` and then a sibling `video-factory`
- * checkout, because the muxing plugin held this runtime before it moved here and a machine that
- * installed it then must not be asked to download 28 MB again. Nothing is written to a sibling.
+ * The shared home comes first, then a legacy `vendor/audio` tree — this plugin's own, a sibling
+ * `video-factory` checkout, or a directory the operator named through `config.audio.vendorDir` or
+ * `DSH_AUDIO_VENDOR`. A machine that installed the 28 MB before the shared home existed must not
+ * be asked to download it again, and nothing is ever written to a sibling.
  *
- * @returns {{dir: string, source: string, manifest: string, model: string, classMap: string, ortEntry: string, ortBinary: string}} the resolved paths.
+ * @returns {{dir: string, source: string, manifest: string, model: string, classMap: string, ortEntry: string, ortBinary: string, ortLoader: string, runtimeDir: string, runtimeSource: string, modelDir: string, modelSource: string}} the resolved paths.
  */
 export function audioPaths() {
-  const { dir, source } = resolveAudioDir()
+  const assets = resolveAudioAssets()
   return {
-    dir,
-    source,
-    manifest: join(dir, 'SOURCE.json'),
-    model: join(dir, 'yamnet', 'yamnet.onnx'),
-    classMap: join(dir, 'yamnet', 'yamnet_class_map.csv'),
-    ortEntry: join(dir, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort.wasm.mjs'),
-    ortBinary: join(dir, 'runtime', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm'),
+    dir: assets.dir,
+    source: assets.source,
+    manifest: assets.manifest,
+    model: assets.model,
+    classMap: assets.classMap,
+    ortEntry: assets.runtimeEntry,
+    ortBinary: assets.runtimeBinary,
+    ortLoader: assets.runtimeLoader,
+    runtimeDir: assets.runtimeDir,
+    runtimeSource: assets.runtimeSource,
+    modelDir: assets.modelDir,
+    modelSource: assets.modelSource,
   }
 }
 
@@ -179,6 +176,10 @@ export function audioEventState() {
     runtime: manifest?.runtime ?? null,
     vendorDir: resolved.dir,
     vendorSource: resolved.source,
+    modelDir: resolved.modelDir,
+    modelSource: resolved.modelSource,
+    runtimeDir: resolved.runtimeDir,
+    runtimeSource: resolved.runtimeSource,
     reason:
       missing.length === 0
         ? null

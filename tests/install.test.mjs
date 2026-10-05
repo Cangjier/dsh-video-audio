@@ -145,13 +145,13 @@ test('sha256Of matches a known digest', async () => {
   assert.equal(await sha256Of(path), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
 })
 
-test('vendoredState describes the real vendored build without running it', (context) => {
+test('vendoredState describes the installed build without running it', (context) => {
   const state = vendoredState()
   if (!state.present) {
-    // This plugin borrows ffmpeg instead of shipping one, so "not vendored here" is the normal
-    // state rather than a failure; the borrowing itself is covered by tests/helpers.mjs, which
-    // fails loudly if the suite cannot find an ffmpeg anywhere.
-    context.skip(`本插件没有自带 ffmpeg（它借用同级 video-factory 的构建）：${state.directory}`)
+    // This plugin borrows ffmpeg instead of shipping one: the shared home (~/.dsh-plugins/ffmpeg)
+    // is where all six plugins install and read it, so "nothing installed" is the normal state on
+    // a machine that has never run an installer.
+    context.skip(`共享目录里还没有 ffmpeg：${state.directory}`)
     return
   }
   assert.ok(state.files.includes('ffmpeg.exe'))

@@ -16,12 +16,31 @@ export {
   audioDirCandidates,
   audioDirCandidatesWithSource,
   findBinary,
+  resolveAudioAssets,
   resolveAudioDir,
   resolveBinary,
   resolveCwd,
   setConfiguredAudioDir,
+  sharedAssetsState,
   versionOf,
 } from './env.mjs'
+
+export {
+  HOME_DIR_NAME,
+  HOME_ENV,
+  SHARED_FFMPEG_BIN,
+  SHARED_FFMPEG_DIR,
+  SHARED_LIB_DIR,
+  SHARED_MATTE_DIR,
+  SHARED_MODELS_DIR,
+  SHARED_OCR_DIR,
+  SHARED_ROOT,
+  SHARED_RUNTIME_DIR,
+  SHARED_YAMNET_DIR,
+  binaryName,
+  sharedHomeState,
+  sharedPath,
+} from './home.mjs'
 
 export {
   FFmpegError,
@@ -139,6 +158,7 @@ export { parseSilences } from './audio-silence.mjs'
 
 export {
   AUDIO_MANIFEST,
+  AUDIO_RUNTIME_DIR,
   AUDIO_TMP_DIR,
   AUDIO_VENDOR_DIR,
   AudioEventError,
@@ -170,14 +190,19 @@ export {
 } from './audio-events.mjs'
 
 export {
+  AUDIO_INSTALL_TARGETS,
   AUDIO_MODEL,
+  AUDIO_MODEL_DIR,
+  AUDIO_RUNTIME_INSTALL_DIR,
   AUDIO_RUNTIME_PACKAGES,
   AUDIO_SCRATCH_DIR,
   adoptSiblingAudio,
   audioInstallState,
   extractRuntimePackage,
   installAudio,
+  legacyAudioRoots,
   removeAudio,
+  resolveInstalledFile,
   runtimePackageDir,
   sha256File,
   sriOf,
